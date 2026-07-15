@@ -1,10 +1,10 @@
 # HappyRobot Demo — Full Build Guide
 
-How this project was built, explained step by step. The goal is that you can read this, understand why every decision was made, and rebuild it from scratch.
+Complete documentation of how this system was built and why each decision was made. Detailed enough to rebuild it from scratch.
 
 ---
 
-## What we built
+## What this system does
 
 A voice AI agent ("Alex") that:
 1. Answers inbound calls from freight carriers
@@ -58,7 +58,7 @@ Both n8n and python-service run as Docker containers on the same Docker network 
 
 ### Why Docker?
 
-Docker lets you run n8n and the Python service as isolated, reproducible environments. You don't install them on your Mac directly — they each live in their own container with their own dependencies.
+Docker lets you run n8n and the Python service as isolated, reproducible environments. Nothing is installed on the host machine directly — n8n and the Python service each live in their own container with their own dependencies.
 
 ### The Docker network
 
@@ -76,7 +76,7 @@ FROM python:3.12-alpine       # start from a minimal Python image
 WORKDIR /app                  # all commands run from /app inside the container
 COPY requirements.txt .       # copy dependency list first (Docker caching trick)
 RUN pip install --no-cache-dir -r requirements.txt   # install Flask
-COPY app.py .                 # copy our application code
+COPY app.py .                 # copy the application code
 EXPOSE 5001                   # document which port the app uses
 CMD ["python", "app.py"]      # command that starts the service
 ```
@@ -99,11 +99,11 @@ docker run -d --name python-service --network happyrobot -p 5001:5001 python-ser
 - `-d` — run in the background (detached)
 - `--name python-service` — gives the container this hostname on the Docker network
 - `--network happyrobot` — joins the shared network
-- `-p 5001:5001` — maps port 5001 on your Mac to port 5001 inside the container
+- `-p 5001:5001` — maps port 5001 on the host machine to port 5001 inside the container
 
 ### The n8n container
 
-n8n's official Docker image has its package manager (`apk`) removed for security. We can't easily add Python into it. So all Python logic lives in the separate `python-service` container, and n8n calls it over HTTP.
+n8n's official Docker image has its package manager (`apk`) removed for security. Adding Python into it is not straightforward. So all Python logic lives in the separate `python-service` container, and n8n calls it over HTTP.
 
 **Starting n8n:**
 ```bash
@@ -121,23 +121,23 @@ docker run -d \
 Key environment variables:
 - `N8N_EDITOR_BASE_URL` — the URL n8n uses for its own UI and OAuth callbacks. Must be localhost so Google OAuth doesn't get routed through ngrok.
 - `WEBHOOK_URL` — the public URL n8n uses for inbound webhooks (what Vapi calls). Must be the ngrok tunnel so Vapi can reach it from the internet.
-- `N8N_API_DISABLED=false` — enables n8n's REST API so we can configure workflows programmatically.
+- `N8N_API_DISABLED=false` — enables n8n's REST API so workflows can be configured programmatically.
 - `-v n8n_data:/home/node/.n8n` — persists n8n data (workflows, credentials) in a Docker volume so it survives container restarts.
 
-**Why two different URLs?** This was a critical discovery. If you set `WEBHOOK_URL` to the ngrok address, n8n also uses that address for Google OAuth callbacks. ngrok's free tier shows an interstitial "are you sure you want to visit this page?" HTML page before forwarding traffic — this breaks the OAuth handshake completely. Separating the two variables fixes it: OAuth stays on localhost, webhooks use ngrok.
+**Why two different URLs?** This took a while to figure out. If you set `WEBHOOK_URL` to the ngrok address, n8n also uses that address for Google OAuth callbacks. ngrok's free tier shows an interstitial "are you sure you want to visit this page?" HTML page before forwarding traffic — this breaks the OAuth handshake completely. Separating the two variables fixes it: OAuth stays on localhost, webhooks use ngrok.
 
 ---
 
 ## Part 2 — ngrok Tunnel
 
-Vapi runs in the cloud. Your n8n runs on your laptop. ngrok creates a tunnel so Vapi can reach your local n8n via a public URL.
+Vapi runs in the cloud; n8n runs locally. ngrok creates a tunnel so Vapi can reach the local n8n instance via a public URL.
 
 ```bash
 ngrok http --domain=<your-ngrok-domain> 5678
 ```
 
 - `--domain=...` — uses the static domain assigned to the free account (so the URL doesn't change every restart)
-- `5678` — forwards traffic to port 5678 on your Mac, where n8n is listening
+- `5678` — forwards traffic to port 5678 on the host machine, where n8n is listening
 
 **Critical gotcha:** The ngrok dashboard shows a "credential ID" (`cr_...`) on the token detail page. This is NOT the auth token. The actual token is only shown once, when you first create it. If you navigate away, you must delete and recreate it.
 
@@ -150,14 +150,14 @@ ngrok config add-authtoken <your-actual-token>
 
 ## Part 3 — Google Sheets
 
-The sheet acts as the load database (TMS). We created one manually with these columns:
+The sheet acts as the load database (TMS), with these columns:
 
 | load_id | origin | destination | target_rate | floor_rate | status | agreed_rate | carrier_name |
 |---|---|---|---|---|---|---|---|
 | MUC-HH-001 | Munich | Hamburg | 1150 | 1300 | open | | |
 
-- `target_rate` — the rate we want to pay (1150 EUR). Alex counters to this if the carrier asks too much.
-- `floor_rate` — the absolute maximum we'll pay (1300 EUR). Above this, we decline.
+- `target_rate` — the rate the broker wants to pay (1150 EUR). Alex counters to this rate if the carrier asks for more.
+- `floor_rate` — the absolute maximum the broker will pay (1300 EUR). Above this, the agent declines.
 - `status` — starts as `open`, becomes `negotiating`, `booked`, or `declined`.
 - `agreed_rate` and `carrier_name` — filled in when the call concludes.
 
@@ -177,19 +177,19 @@ Why Drive API? n8n uses the Drive API to list spreadsheets when you're setting u
 
 n8n is a visual workflow tool. A **workflow** is a chain of **nodes**, where each node does one thing (receive a webhook, call an HTTP endpoint, read a spreadsheet, etc.). Data flows from left to right — each node receives the output of the previous node as its input.
 
-### The node types we used
+### The node types used
 
 **Webhook node** — the entry point of a workflow. It creates a URL that, when called via HTTP POST, starts the workflow. The incoming request body becomes the first item of data in the flow.
 
-**HTTP Request node** — sends an HTTP request to any URL and passes the response forward. We use this to call our Python service. Key settings:
+**HTTP Request node** — sends an HTTP request to any URL and passes the response forward. This is how n8n calls the Python service. Key settings:
 - `Method: POST`
 - `URL: http://python-service:5001/endpoint-name`
 - `Content Type: JSON` — sends the body as `application/json`
 - `Specify Body: Using JSON` — lets you write a JSON body with n8n expressions in it
 
-**Google Sheets node** — reads from or writes to a Google Sheet. Two operations we used:
-- `Read Rows` — fetches all rows matching a filter (we filter by `load_id`)
-- `Update Row` — updates specific columns in a row matching a key (we match on `load_id`)
+**Google Sheets node** — reads from or writes to a Google Sheet. Two operations used here:
+- `Read Rows` — fetches all rows matching a filter (filtered by `load_id`)
+- `Update Row` — updates specific columns in a row matching a key (matched on `load_id`)
 
 ### n8n expressions
 
@@ -283,7 +283,7 @@ Note: `$json.load_id` references the output of the previous node (Parse Input).
 ={{ JSON.stringify(Object.assign({}, $json, { toolCallId: $("Parse Input").first().json.toolCallId })) }}
 ```
 
-Why: The current `$json` is the Sheets row, but we also need `toolCallId` from the Parse Input step. `Object.assign({}, $json, {...})` merges two objects together.
+Why: The current `$json` is the Sheets row, but `toolCallId` from the Parse Input step is also needed. `Object.assign({}, $json, {...})` merges two objects together.
 
 The Python endpoint wraps everything in the Vapi response format:
 ```json
@@ -365,7 +365,7 @@ Fetches `target_rate`, `floor_rate`, and `row_number` (the row index, needed to 
 })) }}
 ```
 
-Why the merge: `$json` here is the Sheets row (has `target_rate`, `floor_rate`). We merge in the fields from Parse Input (has `offered_rate`, `round`, `toolCallId`). The Python endpoint needs all of them together to make a decision.
+Why the merge: `$json` here is the Sheets row (has `target_rate`, `floor_rate`). The fields from Parse Input (`offered_rate`, `round`, `toolCallId`) get merged in. The Python endpoint needs all of them together to make a decision.
 
 Output:
 ```json
@@ -425,7 +425,7 @@ Flask is a Python web framework. It lets you define HTTP endpoints with simple d
 
 ### Why a separate service?
 
-n8n's built-in Code node does support Python, but it's marked as "internal mode — for debugging only" and requires an external virtualenv to be pre-installed at a specific hardcoded path. In the standard n8n Docker image, this doesn't exist. Rather than fight this, we extracted all logic into a separate Flask service. This is also arguably better architecture: the logic is testable with plain curl, independent of n8n, and written in clean Python.
+n8n's built-in Code node does support Python, but it's marked as "internal mode — for debugging only" and requires an external virtualenv to be pre-installed at a specific hardcoded path. In the standard n8n Docker image, this doesn't exist. Rather than fight this, all logic was extracted into a separate Flask service. This is also arguably better architecture: the logic is testable with plain curl, independent of n8n, and written in clean Python.
 
 ### Endpoint 1: `/parse-input`
 
@@ -474,7 +474,7 @@ def _negotiate(offered_rate, target_rate, floor_rate, round_number):
 
     if offered_rate <= floor_rate:
         if round_number >= 2:
-            # Within budget and we already countered once — close the deal
+            # Within budget and already countered once — close the deal
             return {"decision": "accept", "agreed_rate": offered_rate, "status": "booked",
                     "message": f"Alright, we will do {int(offered_rate)} EUR. I will get the paperwork to you now."}
         else:
@@ -482,7 +482,7 @@ def _negotiate(offered_rate, target_rate, floor_rate, round_number):
             return {"decision": "counter", "agreed_rate": None, "status": "negotiating",
                     "message": f"I understand, but the best I can do on this lane is {int(target_rate)} EUR. Can you work with that?"}
 
-    # Carrier is above our absolute ceiling
+    # Carrier is above the absolute ceiling
     if round_number < 2:
         return {"decision": "counter", "agreed_rate": None, "status": "negotiating",
                 "message": f"I hear you, but our rate for this load is {int(target_rate)} EUR. That is the best we can offer on this lane."}
@@ -497,7 +497,7 @@ def _negotiate(offered_rate, target_rate, floor_rate, round_number):
 2. `target < offered <= floor` → counter round 1, accept round 2 (within budget)
 3. `offered > floor` → counter round 1, decline round 2 (above budget)
 
-The `round` parameter tracks how many times we've negotiated. Alex passes `round=1` on the first offer, `round=2` when the carrier responds to our counter.
+The `round` parameter tracks the negotiation rounds. Alex passes `round=1` on the first offer, `round=2` when the carrier responds to the counter.
 
 ### Endpoint 3: `/format-get-load`
 
@@ -515,7 +515,7 @@ Vapi requires tool call responses in this exact shape:
 }
 ```
 
-Note that `result` must be a **string** (a JSON-encoded string of the data), not an object. So we `json.dumps()` the data.
+Note that `result` must be a **string** (a JSON-encoded string of the data), not an object. Hence the `json.dumps()` on the data.
 
 ```python
 @app.route("/format-get-load", methods=["POST"])
@@ -576,7 +576,7 @@ When a carrier calls:
 9. If decision=decline, wish them well and end the call.
 ```
 
-**Why rule 7 is important:** This was a bug fix. Without it, when the carrier said "ok, 1150 works," Alex verbally confirmed the booking but never called `evaluate_offer` with round=2. The sheet stayed at "negotiating." The explicit instruction to "use your counter rate as offered_rate if they accepted" fixed this.
+**Why rule 7 is important:** This rule exists because of a bug. Without it, when the carrier said "ok, 1150 works," Alex verbally confirmed the booking but never called `evaluate_offer` with round=2. The sheet stayed at "negotiating." The explicit instruction to "use your counter rate as offered_rate if they accepted" fixed this.
 
 ### Tools
 
@@ -594,7 +594,7 @@ Two tools configured in Vapi:
 
 ## Part 9 — Startup Sequence
 
-Every time you want to run the demo from scratch:
+To run the demo from scratch:
 
 **Terminal 1 — ngrok:**
 ```bash
@@ -644,7 +644,7 @@ open http://localhost:5678
 
 ## Part 10 — Hard Edges (What Broke and Why)
 
-These are the non-obvious things that cost time. Know them before you build something similar.
+These are the non-obvious things that cost the most time during the build. Worth knowing before building something similar.
 
 **1. ngrok token vs credential ID**
 The ngrok dashboard shows a "credential ID" (`cr_...`) on the token detail page. That is NOT the auth token. The actual token is only shown once at creation time. If you leave the page, delete the token and create a new one.
