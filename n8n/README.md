@@ -1,6 +1,6 @@
 # n8n Workflows
 
-Two workflows orchestrate the agent's tool calls. Full node-by-node documentation is in [../docs/build-guide.md](../docs/build-guide.md), Parts 5 and 6.
+Two workflows orchestrate the agent's tool calls. Full node-by-node documentation is in `docs/build-guide.md` (repo root), Parts 5 and 6.
 
 ## get_load
 
